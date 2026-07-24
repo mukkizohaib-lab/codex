@@ -8,7 +8,8 @@ A Google Colab friendly, fully local XTTS-v2 voice cloning app built on Coqui TT
 - No reference transcript required; upload or record a clean voice sample.
 - Intelligent text normalization for English, Hindi, and Roman Urdu, including URL/email handling, number/date/time/currency cleanup, duplicate punctuation cleanup, quote cleanup, emoji removal, and pronunciation substitutions.
 - Smart chunking by paragraphs, sentence boundaries, phrase punctuation, and maximum character count.
-- Automatic emotion detection and per-chunk inference tuning.
+- Sentence-by-sentence emotion detection with confidence, reasoning, speaking style, energy, speed, pause pattern, and rhythm diagnostics.
+- Emotion override control for forcing a specific delivery when Auto is not desired.
 - Advanced prosody planning for rhythm, emphasis words, stress words, cadence, intonation, question/exclamation handling, and narration flow.
 - AI script optimization that rewrites raw text into more speech-friendly phrasing before XTTS inference.
 - Dynamic pause prediction per chunk instead of fixed global silence.
@@ -82,6 +83,10 @@ This project intentionally keeps XTTS-v2 and the Gradio interface. Some requeste
 ## Advanced quality controls
 
 - **Natural soft breathing:** inserts very quiet breath texture only at predicted phrase boundaries before long or dramatic chunks. Keep the default low amount for realistic results.
-- **Dynamic prosody:** each chunk receives predicted pause length, cadence, emphasis words, stress words, and intonation labels for diagnostics and adaptive inference.
+- **Dynamic prosody:** each chunk receives predicted pause length, cadence, emphasis words, stress words, intonation labels, and sentence-level emotion analysis for diagnostics and adaptive inference.
 - **Diagnostics panel:** reports reference quality, noise, clipping, silence, estimated consistency, chunk count, processing/inference time, peak, LUFS estimate, generated duration, and streaming mode.
 - **Offline-only enhancement:** DeepFilterNet is used only when already installed; otherwise the built-in DSP cleanup path runs without cloud APIs.
+
+## Emotion engine
+
+The offline emotion engine analyzes every sentence independently. It supports Neutral, Happy, Excited, Very Excited, Sad, Emotional, Angry, Calm, Serious, Motivational, Inspirational, Friendly, Romantic, Confident, Fear, Surprise, Suspense, Storytelling, Documentary, Tutorial, News, and Advertisement. Each sentence returns a confidence score, reasoning, speaking style, estimated energy, estimated speed, pause pattern, and rhythm. Low-confidence detections fall back to Neutral instead of randomly assigning emotion.

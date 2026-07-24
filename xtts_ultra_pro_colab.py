@@ -85,7 +85,7 @@ import re
 import tempfile
 import time
 import traceback
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -223,14 +223,53 @@ ROMAN_URDU_PRONUNCIATIONS = {
 }
 
 EMOTION_WORDS = {
+    "neutral": {"today", "currently", "now", "यह", "yeh"},
     "happy": {"great", "amazing", "happy", "congratulations", "खुश", "मुबारक", "zabardast"},
-    "sad": {"sad", "sorry", "loss", "miss", "दुख", "अफसोस", "udas"},
+    "excited": {"wow", "incredible", "launch", "biggest", "ever", "कमाल", "shandaar"},
+    "very_excited": {"finally", "million", "unbelievable", "can't believe", "we did it", "सबसे बड़ा", "bohat zabardast"},
+    "sad": {"sad", "sorry", "loss", "miss", "failed", "दुख", "अफसोस", "udas", "haar"},
+    "emotional": {"heart", "tears", "memories", "feel", "दिल", "jazbaat"},
     "angry": {"angry", "furious", "stop", "hate", "गुस्सा", "bas karo"},
-    "excited": {"wow", "incredible", "launch", "!", "कमाल", "shandaar"},
-    "motivational": {"you can", "believe", "success", "dream", "जीत", "kamiyabi"},
-    "dramatic": {"suddenly", "mystery", "dark", "imagine", "अचानक", "kahani"},
     "calm": {"breathe", "relax", "peace", "softly", "आराम", "sukoon"},
     "serious": {"important", "warning", "must", "critical", "जरूरी", "aham"},
+    "motivational": {"you can", "believe", "success", "dream", "जीत", "kamiyabi"},
+    "inspirational": {"inspire", "hope", "future", "journey", "umeed", "प्रेरणा"},
+    "friendly": {"welcome", "hello", "hi", "friends", "dosto", "नमस्ते"},
+    "romantic": {"love", "beautiful", "together", "forever", "pyaar", "मोहब्बत"},
+    "confident": {"definitely", "guaranteed", "proven", "clear", "yakeen", "निश्चित"},
+    "fear": {"afraid", "scared", "danger", "dark", "डर", "khauf"},
+    "surprise": {"suddenly", "unexpected", "guess what", "अचानक", "hairan"},
+    "suspense": {"mystery", "secret", "wait", "unknown", "raaz", "रहस्य"},
+    "storytelling": {"once", "story", "chapter", "kahani", "कहानी"},
+    "documentary": {"history", "documentary", "research", "earth", "science", "तथ्य"},
+    "tutorial": {"tutorial", "step", "learn", "first", "next", "guide", "seekhein"},
+    "news": {"breaking", "update", "report", "headline", "announced", "खबर"},
+    "advertisement": {"free", "offer", "sale", "limited", "buy", "discount", "deal"},
+}
+
+EMOTION_PROFILES = {
+    "neutral": (0.50, 1.00, "balanced + natural + medium pause", "medium", "steady"),
+    "happy": (0.68, 1.04, "slightly faster + brighter + smiling tone", "short", "bouncy"),
+    "excited": (0.78, 1.07, "fast + energetic + stronger emphasis", "short", "upbeat"),
+    "very_excited": (0.88, 1.10, "very energetic + bright + punchy emphasis", "very short", "fast dynamic"),
+    "sad": (0.28, 0.91, "slower + softer + longer pauses", "long", "slow reflective"),
+    "emotional": (0.42, 0.94, "soft + intimate + expressive pauses", "long", "wave-like"),
+    "angry": (0.82, 1.06, "intense + firm + short pauses", "short", "sharp"),
+    "calm": (0.30, 0.92, "gentle + relaxed + smooth transitions", "relaxed", "slow smooth"),
+    "serious": (0.55, 0.97, "clear + grounded + controlled", "balanced", "measured"),
+    "motivational": (0.80, 1.05, "inspiring + energetic + emphasized keywords", "medium-short", "driving"),
+    "inspirational": (0.70, 1.02, "warm + hopeful + rising energy", "medium", "uplifting"),
+    "friendly": (0.62, 1.03, "warm + conversational + welcoming", "short", "conversational"),
+    "romantic": (0.36, 0.92, "soft + warm + intimate", "long", "gentle"),
+    "confident": (0.72, 1.01, "assured + firm + polished", "balanced", "controlled"),
+    "fear": (0.48, 1.02, "tense + careful + breathy pauses", "uneven", "hesitant"),
+    "surprise": (0.76, 1.08, "bright + lifted + quick reaction", "short", "sudden"),
+    "suspense": (0.44, 0.90, "slow + dramatic + delayed pauses", "dramatic", "suspended"),
+    "storytelling": (0.58, 0.96, "expressive narration + dynamic pacing", "dramatic", "narrative"),
+    "documentary": (0.60, 0.96, "confident + stable + professional", "balanced", "measured"),
+    "tutorial": (0.52, 0.98, "stable pace + clear pronunciation + balanced pauses", "balanced", "instructional"),
+    "news": (0.66, 1.02, "professional + confident + crisp", "balanced", "broadcast"),
+    "advertisement": (0.82, 1.08, "bright + persuasive + punchy", "short", "commercial"),
 }
 
 
@@ -262,6 +301,19 @@ class ProsodyPlan:
     cadence: str
     breath_before: bool
     rhythm_score: float
+
+
+@dataclass(frozen=True)
+class EmotionAnalysis:
+    sentence: str
+    emotion: str
+    confidence: float
+    reasoning: str
+    speaking_style: str
+    estimated_energy: float
+    estimated_speed: float
+    pause_pattern: str
+    rhythm: str
 
 
 @dataclass(frozen=True)
@@ -467,25 +519,81 @@ def deepfilternet_enhance_if_available(input_path: str, wav: np.ndarray, sr: int
     # the stable path remains local DSP unless the user manually enhances before upload.
     return wav
 
-def detect_emotion(text: str) -> str:
-    lower = text.lower()
-    scores = {emotion: sum(1 for word in words if word in lower) for emotion, words in EMOTION_WORDS.items()}
-    if "?" in text:
-        scores["serious"] = scores.get("serious", 0) + 1
-    if "!" in text:
-        scores["excited"] = scores.get("excited", 0) + 1
+def analyze_sentence_emotion(sentence: str, forced_emotion: str = "Auto") -> EmotionAnalysis:
+    """Classify one sentence using offline context, wording, punctuation, and style cues."""
+
+    clean = sentence.strip()
+    lower = clean.lower()
+    scores: dict[str, float] = {emotion: 0.0 for emotion in EMOTION_WORDS}
+    reasons: dict[str, list[str]] = {emotion: [] for emotion in EMOTION_WORDS}
+    if forced_emotion and forced_emotion != "Auto":
+        key = forced_emotion.lower().replace(" ", "_")
+        energy, speed, style, pause_pattern, rhythm = EMOTION_PROFILES.get(key, EMOTION_PROFILES["neutral"])
+        return EmotionAnalysis(clean, key, 1.0, "User override selected.", style, energy, speed, pause_pattern, rhythm)
+
+    for emotion, cues in EMOTION_WORDS.items():
+        for cue in cues:
+            if cue in lower:
+                scores[emotion] += 1.0 + min(len(cue) / 18, 0.6)
+                reasons[emotion].append(f"cue '{cue}'")
+
+    if clean.endswith("!"):
+        scores["excited"] += 1.1; reasons["excited"].append("exclamation mark")
+        if "!" in clean[:-1] or any(word in lower for word in ("finally", "million", "ever", "unbelievable")):
+            scores["very_excited"] += 1.6; reasons["very_excited"].append("strong exclamation/context")
+    if clean.endswith("?"):
+        scores["friendly"] += 0.45; reasons["friendly"].append("question intonation")
+        scores["tutorial"] += 0.35; reasons["tutorial"].append("question-style explanation")
+    if re.search(r"\b(i tried|tried my best|but still|failed|lost|can't|cannot)\b", lower):
+        scores["sad"] += 1.8; reasons["sad"].append("setback/failure context")
+    if re.search(r"\b(welcome back|in this video|today we will|step by step|let's learn)\b", lower):
+        scores["tutorial"] += 2.0; reasons["tutorial"].append("tutorial framing")
+    if re.search(r"\b(biggest|breaking|update|announced|report)\b", lower) and "ai" in lower:
+        scores["news"] += 1.5; reasons["news"].append("AI news/update context")
+        scores["excited"] += 0.8; reasons["excited"].append("large update wording")
+    if re.search(r"\b(one million|million subscribers|finally reached)\b", lower):
+        scores["very_excited"] += 2.2; reasons["very_excited"].append("achievement milestone")
+    if re.search(r"\b(free|limited time|offer|discount|sale)\b", lower):
+        scores["advertisement"] += 1.7; reasons["advertisement"].append("promotional wording")
+    if len(clean) > 170 and scores["neutral"] == 0:
+        scores["storytelling"] += 0.25; reasons["storytelling"].append("long narrative sentence")
+
     best = max(scores, key=scores.get)
-    return best if scores[best] else "neutral"
+    total = sum(value for value in scores.values() if value > 0)
+    confidence = scores[best] / total if total else 0.0
+    if confidence < 0.34 or scores[best] < 0.75:
+        best = "neutral"
+        confidence = max(0.35, confidence) if total else 0.55
+        reasoning = "Low-confidence cues; falling back to Neutral for natural delivery."
+    else:
+        reasoning = "; ".join(reasons[best][:4]) or "context and punctuation match"
+    energy, speed, style, pause_pattern, rhythm = EMOTION_PROFILES.get(best, EMOTION_PROFILES["neutral"])
+    return EmotionAnalysis(clean, best, float(np.clip(confidence, 0.0, 0.99)), reasoning, style, energy, speed, pause_pattern, rhythm)
+
+
+def detect_emotion(text: str) -> str:
+    return analyze_sentence_emotion(text).emotion
+
+
+def analyze_emotions_for_chunks(chunks: list[str], forced_emotion: str = "Auto") -> list[EmotionAnalysis]:
+    return [analyze_sentence_emotion(chunk, forced_emotion) for chunk in chunks]
 
 
 def adapt_settings(base: InferenceSettings, emotion: str, style: str) -> InferenceSettings:
-    shifts = {
-        "happy": (0.06, 0.03, 8, -0.4, 0.00, 1.02), "sad": (-0.05, -0.02, -5, 0.4, 0.06, 0.92),
-        "serious": (-0.07, -0.04, -8, 0.7, 0.03, 0.96), "excited": (0.12, 0.05, 15, -0.7, -0.03, 1.05),
-        "calm": (-0.06, -0.03, -5, 0.3, 0.04, 0.93), "angry": (0.08, 0.02, 8, 0.2, -0.02, 1.03),
-        "soft": (-0.08, -0.04, -8, 0.4, 0.06, 0.90), "motivational": (0.08, 0.04, 10, -0.5, -0.01, 1.02),
-        "dramatic": (0.10, 0.04, 12, -0.2, 0.08, 0.88), "neutral": (0, 0, 0, 0, 0, 1),
-    }[emotion]
+    shifts_by_emotion = {
+        "happy": (0.06, 0.03, 8, -0.4, 0.00, 1.04), "sad": (-0.05, -0.02, -5, 0.4, 0.06, 0.91),
+        "serious": (-0.07, -0.04, -8, 0.7, 0.03, 0.97), "excited": (0.12, 0.05, 15, -0.7, -0.03, 1.07),
+        "very_excited": (0.16, 0.07, 20, -0.9, -0.05, 1.10), "emotional": (0.03, 0.02, 8, -0.1, 0.08, 0.94),
+        "calm": (-0.06, -0.03, -5, 0.3, 0.04, 0.92), "angry": (0.08, 0.02, 8, 0.2, -0.02, 1.06),
+        "romantic": (-0.07, -0.02, -5, 0.2, 0.07, 0.92), "fear": (0.02, 0.00, 6, 0.1, 0.02, 1.02),
+        "surprise": (0.10, 0.04, 12, -0.3, -0.02, 1.08), "suspense": (0.06, 0.02, 10, 0.0, 0.10, 0.90),
+        "friendly": (0.04, 0.02, 5, -0.2, 0.00, 1.03), "confident": (0.02, 0.00, 4, 0.1, 0.00, 1.01),
+        "motivational": (0.08, 0.04, 10, -0.5, -0.01, 1.05), "inspirational": (0.06, 0.03, 8, -0.2, 0.02, 1.02),
+        "storytelling": (0.10, 0.04, 12, -0.2, 0.08, 0.96), "documentary": (-0.04, -0.02, -3, 0.5, 0.04, 0.96),
+        "tutorial": (-0.06, -0.03, -6, 0.8, 0.02, 0.98), "news": (-0.02, -0.01, 2, 0.4, 0.00, 1.02),
+        "advertisement": (0.12, 0.05, 14, -0.6, -0.04, 1.08), "neutral": (0, 0, 0, 0, 0, 1),
+    }
+    shifts = shifts_by_emotion.get(emotion, shifts_by_emotion["neutral"])
     style_speed = {"News": 1.03, "Shorts": 1.08, "Audiobook": 0.94, "Documentary": 0.95, "Emotional": 0.92}.get(style, 1.0)
     return InferenceSettings(
         temperature=float(np.clip(base.temperature + shifts[0], 0.2, 0.95)), top_p=float(np.clip(base.top_p + shifts[1], 0.65, 0.98)),
@@ -717,7 +825,7 @@ def validate_inputs(gen_text: str, ref_audio: str | list[str] | None) -> None:
         raise ValueError("Text to Speak khali hai.")
 
 
-def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_style, speed, temperature, top_p, top_k, repetition_penalty, length_penalty, chunk_long_text, custom_pronunciations, enable_mastering, enable_breathing, breathing_amount, progress=gr.Progress(track_tqdm=True)):
+def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_style, speed, temperature, top_p, top_k, repetition_penalty, length_penalty, chunk_long_text, custom_pronunciations, forced_emotion, enable_mastering, enable_breathing, breathing_amount, progress=gr.Progress(track_tqdm=True)):
     start = time.time()
     try:
         validate_inputs(gen_text, ref_audio)
@@ -726,6 +834,7 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         language_code = LANGUAGE_CHOICES.get(language_label, "en")
         base = PRESETS[preset_name].settings if preset_name != "Use Advanced Sliders" else InferenceSettings(float(temperature), float(top_p), int(top_k), float(repetition_penalty), float(length_penalty), float(speed))
         chunks = sentence_chunks(text, speaking_style) if chunk_long_text else [text]
+        emotion_plans = analyze_emotions_for_chunks(chunks, forced_emotion)
         prosody_plans = analyze_prosody(chunks, speaking_style)
         progress(0.12, desc="Preparing reference voice")
         speaker_wavs, ref_warning, ref_score, ref_diagnostics = prepare_reference_audio(ref_audio)
@@ -733,11 +842,15 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         emotions: list[str] = []
         stats: list[str] = []
         final_sr = SAMPLE_RATE
+        emotion_reports: list[str] = []
         for index, plan in enumerate(prosody_plans, start=1):
             chunk = plan.text
-            emotion = detect_emotion(chunk)
+            emotion_plan = emotion_plans[index - 1]
+            emotion = emotion_plan.emotion
             emotions.append(emotion)
-            settings = adapt_settings(base, emotion, speaking_style)
+            emotion_reports.append(f"{index}. {emotion} ({emotion_plan.confidence:.0%}) — {emotion_plan.speaking_style}; reason: {emotion_plan.reasoning}")
+            emotion_base = replace(base, speed=float(np.clip(base.speed * emotion_plan.estimated_speed, 0.85, 1.15)))
+            settings = adapt_settings(emotion_base, emotion, speaking_style)
             progress(0.12 + 0.78 * (index - 1) / max(len(chunks), 1), desc=f"Chunk {index}/{len(chunks)} · {emotion}")
             wav, final_sr = synthesize_xtts_chunk(chunk, speaker_wavs, language_code, settings)
             wav_parts.append(wav)
@@ -752,7 +865,7 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         elapsed = time.time() - start
         lufs = estimate_lufs(merged)
         prosody_preview = "; ".join(f"{i+1}:{p.intonation}/{p.cadence}/pause={p.pause_after:.2f}s" for i, p in enumerate(prosody_plans[:8]))
-        message = ["✅ Success! XTTS-v2 me reference text ki zaroorat nahi hoti.", f"Reference quality: {ref_score}/100", f"Reference diagnostics: {ref_diagnostics}", f"Detected emotions: {', '.join(dict.fromkeys(emotions))}", f"Prosody: {prosody_preview}", f"Chunks: {len(chunks)} · Duration: {duration:.1f}s · Sample rate: {final_sr} Hz · Peak: {peak:.2f} · LUFS: {lufs:.1f}", f"Elapsed: {elapsed:.1f}s", "Inference:", *stats]
+        message = ["✅ Success! XTTS-v2 me reference text ki zaroorat nahi hoti.", f"Reference quality: {ref_score}/100", f"Reference diagnostics: {ref_diagnostics}", f"Detected emotions: {', '.join(dict.fromkeys(emotions))}", "Emotional diagnostics:", *emotion_reports, f"Prosody: {prosody_preview}", f"Chunks: {len(chunks)} · Duration: {duration:.1f}s · Sample rate: {final_sr} Hz · Peak: {peak:.2f} · LUFS: {lufs:.1f}", f"Elapsed: {elapsed:.1f}s", "Inference:", *stats]
         if ref_warning:
             message.insert(1, "⚠️ " + ref_warning)
         return OUTPUT_PATH, "\n".join(message), f"{ref_score}/100", ", ".join(dict.fromkeys(emotions)), f"{ref_diagnostics} | chunks={len(chunks)} | infer+process={elapsed:.1f}s | peak={peak:.2f} | lufs={lufs:.1f} | duration={duration:.1f}s | streaming=progressive callbacks"
@@ -777,6 +890,7 @@ with gr.Blocks() as studio:
             with gr.Row():
                 preset_dropdown = gr.Dropdown(choices=list(PRESETS.keys()), value="Ultra Natural", label="Preset")
                 style_dropdown = gr.Dropdown(choices=list(STYLE_PAUSES.keys()), value="Conversation", label="Speaking Style")
+            forced_emotion_dropdown = gr.Dropdown(choices=["Auto", "Neutral", "Happy", "Excited", "Very Excited", "Sad", "Emotional", "Angry", "Calm", "Serious", "Motivational", "Inspirational", "Friendly", "Romantic", "Confident", "Fear", "Surprise", "Suspense", "Storytelling", "Documentary", "Tutorial", "News", "Advertisement"], value="Auto", label="Emotion Override")
             with gr.Accordion("Advanced XTTS Controls", open=False):
                 speed_slider = gr.Slider(0.85, 1.15, value=1.0, step=0.03, label="Speed")
                 temperature_slider = gr.Slider(0.2, 0.95, value=0.55, step=0.05, label="Temperature")
@@ -799,7 +913,7 @@ with gr.Blocks() as studio:
     status_box = gr.Textbox(label="Real-time Logs / System Status", interactive=False, lines=10)
     generate_btn.click(
         fn=clone_voice_xtts,
-        inputs=[gen_text_input, audio_input, language_dropdown, preset_dropdown, style_dropdown, speed_slider, temperature_slider, top_p_slider, top_k_slider, repetition_slider, length_slider, chunk_input, custom_pronunciations, mastering_input, breathing_input, breathing_slider],
+        inputs=[gen_text_input, audio_input, language_dropdown, preset_dropdown, style_dropdown, speed_slider, temperature_slider, top_p_slider, top_k_slider, repetition_slider, length_slider, chunk_input, custom_pronunciations, forced_emotion_dropdown, mastering_input, breathing_input, breathing_slider],
         outputs=[audio_output, status_box, reference_quality, emotion_box, stats_box],
     )
 
