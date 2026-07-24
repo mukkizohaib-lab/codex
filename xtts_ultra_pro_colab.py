@@ -79,6 +79,7 @@ if IN_NOTEBOOK:
     install_notebook_dependencies()
 
 import hashlib
+import json
 import inspect
 import os
 import re
@@ -272,6 +273,20 @@ EMOTION_PROFILES = {
     "advertisement": (0.82, 1.08, "bright + persuasive + punchy", "short", "commercial"),
 }
 
+EMOTION_ALIASES = {
+    "very_happy": "very_excited",
+    "very_sad": "sad",
+    "professional": "documentary",
+    "podcast": "friendly",
+    "narration": "storytelling",
+    "audiobook": "storytelling",
+}
+
+
+def canonical_emotion_key(value: str) -> str:
+    key = (value or "neutral").lower().replace(" ", "_")
+    return EMOTION_ALIASES.get(key, key if key in EMOTION_PROFILES else "neutral")
+
 
 @dataclass(frozen=True)
 class InferenceSettings:
@@ -317,6 +332,39 @@ class EmotionAnalysis:
 
 
 @dataclass(frozen=True)
+class SentenceSpeechPlan:
+    index: int
+    sentence: str
+    emotion: str
+    confidence: float
+    reasoning: str
+    speaking_style: str
+    energy: float
+    speed: float
+    pause_before_ms: int
+    pause_after_ms: int
+    pitch_level: str
+    stress_level: str
+    breathing: bool
+    pronunciation_override: str
+    volume: float
+    important_words: tuple[str, ...]
+    locked_fields: tuple[str, ...]
+
+
+@dataclass(frozen=True)
+class MasteringProfile:
+    name: str
+    target_lufs: float
+    warmth: float
+    presence: float
+    de_esser: float
+    compression: float
+    stereo_width: float
+    limiter_ceiling: float
+
+
+@dataclass(frozen=True)
 class ReferenceDiagnostics:
     quality_score: int
     noise_level_db: float
@@ -356,6 +404,19 @@ PRESETS = {
 }
 
 STYLE_PAUSES = {"Tutorial": 0.20, "Conversation": 0.16, "Storytelling": 0.24, "News": 0.18, "Podcast": 0.18, "Documentary": 0.25, "Audiobook": 0.26, "Motivational": 0.20, "Emotional": 0.30}
+
+MASTERING_PROFILES = {
+    "Studio Voice": MasteringProfile("Studio Voice", -16.0, 0.18, 0.12, 0.22, 0.24, 0.00, 0.98),
+    "Broadcast": MasteringProfile("Broadcast", -15.0, 0.14, 0.16, 0.26, 0.30, 0.00, 0.97),
+    "Podcast": MasteringProfile("Podcast", -16.5, 0.20, 0.10, 0.20, 0.22, 0.00, 0.98),
+    "Audiobook": MasteringProfile("Audiobook", -18.0, 0.16, 0.06, 0.16, 0.14, 0.00, 0.98),
+    "Documentary": MasteringProfile("Documentary", -17.0, 0.18, 0.12, 0.20, 0.20, 0.00, 0.98),
+    "YouTube": MasteringProfile("YouTube", -14.5, 0.16, 0.18, 0.24, 0.28, 0.00, 0.97),
+    "Radio": MasteringProfile("Radio", -14.0, 0.12, 0.18, 0.28, 0.34, 0.00, 0.96),
+    "Warm Voice": MasteringProfile("Warm Voice", -17.0, 0.26, 0.06, 0.16, 0.18, 0.00, 0.98),
+    "Natural Voice": MasteringProfile("Natural Voice", -18.0, 0.10, 0.06, 0.12, 0.10, 0.00, 0.99),
+    "Clean Voice": MasteringProfile("Clean Voice", -17.5, 0.08, 0.14, 0.24, 0.16, 0.00, 0.98),
+}
 
 
 def words_for_number(value: int) -> str:
@@ -527,7 +588,7 @@ def analyze_sentence_emotion(sentence: str, forced_emotion: str = "Auto") -> Emo
     scores: dict[str, float] = {emotion: 0.0 for emotion in EMOTION_WORDS}
     reasons: dict[str, list[str]] = {emotion: [] for emotion in EMOTION_WORDS}
     if forced_emotion and forced_emotion != "Auto":
-        key = forced_emotion.lower().replace(" ", "_")
+        key = canonical_emotion_key(forced_emotion)
         energy, speed, style, pause_pattern, rhythm = EMOTION_PROFILES.get(key, EMOTION_PROFILES["neutral"])
         return EmotionAnalysis(clean, key, 1.0, "User override selected.", style, energy, speed, pause_pattern, rhythm)
 
@@ -593,7 +654,7 @@ def adapt_settings(base: InferenceSettings, emotion: str, style: str) -> Inferen
         "tutorial": (-0.06, -0.03, -6, 0.8, 0.02, 0.98), "news": (-0.02, -0.01, 2, 0.4, 0.00, 1.02),
         "advertisement": (0.12, 0.05, 14, -0.6, -0.04, 1.08), "neutral": (0, 0, 0, 0, 0, 1),
     }
-    shifts = shifts_by_emotion.get(emotion, shifts_by_emotion["neutral"])
+    shifts = shifts_by_emotion.get(canonical_emotion_key(emotion), shifts_by_emotion["neutral"])
     style_speed = {"News": 1.03, "Shorts": 1.08, "Audiobook": 0.94, "Documentary": 0.95, "Emotional": 0.92}.get(style, 1.0)
     return InferenceSettings(
         temperature=float(np.clip(base.temperature + shifts[0], 0.2, 0.95)), top_p=float(np.clip(base.top_p + shifts[1], 0.65, 0.98)),
@@ -630,6 +691,135 @@ def sentence_chunks(text: str, style: str, max_chars: int = MAX_CHARS_PER_CHUNK)
         chunks.append(current)
     return chunks
 
+
+def pitch_label_for_emotion(emotion: str) -> str:
+    if emotion in {"happy", "excited", "very_excited", "surprise", "advertisement"}:
+        return "Slightly Higher"
+    if emotion in {"sad", "calm", "romantic", "suspense"}:
+        return "Slightly Lower"
+    return "Neutral"
+
+
+def stress_label_for_plan(analysis: EmotionAnalysis, important_words: tuple[str, ...]) -> str:
+    if analysis.emotion in {"angry", "motivational", "advertisement", "serious"} or len(important_words) >= 3:
+        return "High"
+    if analysis.emotion in {"sad", "calm", "romantic"}:
+        return "Low"
+    return "Medium"
+
+
+def segment_script(text: str, language_label: str, custom_pronunciations: str = "") -> list[str]:
+    optimized = optimize_script_for_speech(normalize_text(text, language_label, custom_pronunciations), language_label)
+    return sentence_chunks(optimized, "Conversation", max_chars=MAX_CHARS_PER_CHUNK)
+
+
+def build_sentence_speech_plans(text: str, language_label: str, custom_pronunciations: str = "", forced_emotion: str = "Auto") -> list[SentenceSpeechPlan]:
+    sentences = segment_script(text, language_label, custom_pronunciations)
+    analyses = analyze_emotions_for_chunks(sentences, forced_emotion)
+    prosody = analyze_prosody(sentences, "Conversation")
+    plans: list[SentenceSpeechPlan] = []
+    previous_pause = 300
+    for index, (sentence, analysis, plan) in enumerate(zip(sentences, analyses, prosody), start=1):
+        important = tuple(dict.fromkeys((*plan.emphasis_words, *predict_stress_words(sentence))))
+        pause_after = int(plan.pause_after * 1000)
+        plans.append(SentenceSpeechPlan(
+            index=index, sentence=sentence, emotion=analysis.emotion, confidence=analysis.confidence, reasoning=analysis.reasoning,
+            speaking_style=analysis.speaking_style, energy=analysis.estimated_energy, speed=analysis.estimated_speed,
+            pause_before_ms=previous_pause if index == 1 else min(900, max(120, previous_pause // 2)), pause_after_ms=pause_after,
+            pitch_level=pitch_label_for_emotion(analysis.emotion), stress_level=stress_label_for_plan(analysis, important),
+            breathing=plan.breath_before, pronunciation_override="", volume=1.0, important_words=important, locked_fields=(),
+        ))
+        previous_pause = pause_after
+    return plans
+
+
+def speech_plans_to_json(plans: list[SentenceSpeechPlan]) -> str:
+    return json.dumps([plan.__dict__ | {"important_words": list(plan.important_words), "locked_fields": list(plan.locked_fields)} for plan in plans], ensure_ascii=False, indent=2)
+
+
+def parse_speech_plan_editor(plan_json: str, fallback_sentences: list[str], forced_emotion: str) -> list[SentenceSpeechPlan]:
+    if not (plan_json or "").strip():
+        return build_sentence_speech_plans(" ".join(fallback_sentences), "English", forced_emotion=forced_emotion)
+    try:
+        raw = json.loads(plan_json)
+    except json.JSONDecodeError:
+        raw = []
+    plans: list[SentenceSpeechPlan] = []
+    for index, item in enumerate(raw if isinstance(raw, list) else [], start=1):
+        sentence = str(item.get("sentence") or (fallback_sentences[index - 1] if index <= len(fallback_sentences) else "")).strip()
+        if not sentence:
+            continue
+        analysis = analyze_sentence_emotion(sentence, forced_emotion)
+        locked = tuple(item.get("locked_fields", ()))
+        emotion = canonical_emotion_key(str(item.get("emotion", analysis.emotion))) if "emotion" in locked else analysis.emotion
+        speed = float(item.get("speed", analysis.estimated_speed)) if "speed" in locked else analysis.estimated_speed
+        energy = float(item.get("energy", analysis.estimated_energy)) if "energy" in locked else analysis.estimated_energy
+        important = tuple(item.get("important_words", predict_emphasis_words(sentence)))
+        plans.append(SentenceSpeechPlan(
+            index=index, sentence=sentence, emotion=emotion, confidence=float(item.get("confidence", analysis.confidence)),
+            reasoning=str(item.get("reasoning", analysis.reasoning)), speaking_style=str(item.get("speaking_style", analysis.speaking_style)),
+            energy=energy, speed=speed, pause_before_ms=int(item.get("pause_before_ms", 250)), pause_after_ms=int(item.get("pause_after_ms", dynamic_pause_after(sentence, "Conversation") * 1000)),
+            pitch_level=str(item.get("pitch_level", pitch_label_for_emotion(emotion))), stress_level=str(item.get("stress_level", "Medium")),
+            breathing=bool(item.get("breathing", len(sentence) > 160)), pronunciation_override=str(item.get("pronunciation_override", "")),
+            volume=float(item.get("volume", 1.0)), important_words=important, locked_fields=locked,
+        ))
+    return plans
+
+
+def emotion_timeline(plans: list[SentenceSpeechPlan]) -> str:
+    icons = {"neutral": "😐", "happy": "😀", "excited": "😄", "very_excited": "🤩", "sad": "😢", "emotional": "🥹", "angry": "😠", "calm": "😌", "serious": "🧐", "motivational": "🔥", "inspirational": "✨", "friendly": "🙂", "romantic": "💞", "confident": "😎", "fear": "😨", "surprise": "😲", "suspense": "🕯️", "storytelling": "📖", "documentary": "🎬", "tutorial": "🎓", "news": "📰", "advertisement": "📣"}
+    return " ".join(icons.get(plan.emotion, "😐") for plan in plans)
+
+
+def speech_timeline(plans: list[SentenceSpeechPlan]) -> str:
+    parts = []
+    for plan in plans:
+        pace = "Very Fast" if plan.speed >= 1.09 else "Fast" if plan.speed >= 1.03 else "Slow" if plan.speed <= 0.95 else "Normal"
+        breath = " + breath" if plan.breathing else ""
+        stress = f"stress={plan.stress_level}"
+        words = ", ".join(plan.important_words[:3]) if plan.important_words else "none"
+        parts.append(f"S{plan.index}:{pace}, pause={plan.pause_after_ms}ms{breath}, {stress}, words=[{words}]")
+    return " | ".join(parts)
+
+
+def speech_suggestions(plans: list[SentenceSpeechPlan]) -> str:
+    suggestions: list[str] = []
+    for plan in plans:
+        if len(plan.sentence) > 180:
+            suggestions.append(f"Sentence {plan.index}: split this long sentence for cleaner XTTS phrasing.")
+        if plan.emotion in {"suspense", "sad", "emotional"} and plan.pause_before_ms < 350:
+            suggestions.append(f"Sentence {plan.index}: increase pause before this sentence for stronger dramatic impact.")
+        if plan.speed > 1.08 and len(plan.sentence.split()) > 22:
+            suggestions.append(f"Sentence {plan.index}: lower speaking speed to avoid rushed articulation.")
+        if any(word.lower() in {"success", "dream", "believe", "win"} for word in plan.important_words) and plan.emotion == "neutral":
+            suggestions.append(f"Sentence {plan.index}: try Motivational style for stronger delivery.")
+    return "\n".join(suggestions) if suggestions else "No major issues detected. Script is ready for XTTS-v2."
+
+
+def speech_diagnostics(plans: list[SentenceSpeechPlan]) -> str:
+    words = sum(len(plan.sentence.split()) for plan in plans)
+    avg_speed = sum(plan.speed for plan in plans) / max(len(plans), 1)
+    avg_energy = sum(plan.energy for plan in plans) / max(len(plans), 1)
+    avg_pause = sum(plan.pause_after_ms for plan in plans) / max(len(plans), 1)
+    distribution = {plan.emotion: 0 for plan in plans}
+    for plan in plans:
+        distribution[plan.emotion] += 1
+    estimated_time = words / max(avg_speed, 0.5) / 2.2 + sum(plan.pause_after_ms for plan in plans) / 1000
+    complexity = "High" if words / max(len(plans), 1) > 24 else "Medium" if words / max(len(plans), 1) > 14 else "Low"
+    naturalness = int(np.clip(92 - max(0, avg_pause - 650) / 25 - (10 if complexity == "High" else 0), 45, 98))
+    difficulty = "Hard" if complexity == "High" or any(plan.speed > 1.1 for plan in plans) else "Medium" if len(plans) > 8 else "Easy"
+    return "\n".join([
+        f"Sentence Count: {len(plans)}", f"Word Count: {words}", f"Estimated Speaking Time: {estimated_time:.1f}s",
+        f"Average Speed: {avg_speed:.2f}", f"Average Energy: {avg_energy:.2f}", f"Average Pause Length: {avg_pause:.0f}ms",
+        f"Emotion Distribution: {distribution}", f"Speech Complexity: {complexity}", f"Narration Score: {naturalness}/100",
+        f"Naturalness Score: {naturalness}/100", f"Estimated XTTS Difficulty: {difficulty}",
+    ])
+
+
+def analyze_script_for_editor(gen_text: str, language_label: str, custom_pronunciations: str, forced_emotion: str):
+    plans = build_sentence_speech_plans(gen_text, language_label, custom_pronunciations, forced_emotion)
+    preview = "\n".join([emotion_timeline(plans), speech_timeline(plans), "", speech_suggestions(plans), "", speech_diagnostics(plans)])
+    return speech_plans_to_json(plans), emotion_timeline(plans), preview
 
 def quality_score(wav: np.ndarray, sr: int) -> tuple[int, list[str]]:
     duration = len(wav) / sr if sr else 0
@@ -710,23 +900,84 @@ def prepare_reference_audio(ref_audio_paths: str | list[str]) -> tuple[list[str]
     return prepared, "\n".join(dict.fromkeys(all_warnings)), avg_score, "\n".join(diagnostic_lines)
 
 
-def master_audio(wav: np.ndarray, sr: int, compression: float = 0.15, brightness: float = 0.0) -> np.ndarray:
+def declick_audio(wav: np.ndarray) -> np.ndarray:
+    if wav.size < 5:
+        return wav
+    diff = np.abs(np.diff(wav, prepend=wav[0]))
+    threshold = max(0.35, float(np.percentile(diff, 99.8)) * 2.5)
+    clicks = np.where(diff > threshold)[0]
+    repaired = wav.copy()
+    for idx in clicks:
+        left = max(0, idx - 2); right = min(wav.size, idx + 3)
+        repaired[idx] = float(np.median(wav[left:right]))
+    return repaired.astype(np.float32)
+
+
+def dynamic_eq(wav: np.ndarray, sr: int, profile: MasteringProfile) -> np.ndarray:
+    if wav.size < 64:
+        return wav
+    spectrum = np.fft.rfft(wav)
+    freqs = np.fft.rfftfreq(wav.size, 1 / sr)
+    eq = np.ones_like(freqs, dtype=np.float32)
+    eq[(freqs > 120) & (freqs < 260)] *= 1.0 + profile.warmth
+    eq[(freqs > 350) & (freqs < 650)] *= 0.92
+    eq[(freqs > 2400) & (freqs < 4200)] *= 1.0 + profile.presence
+    eq[(freqs > 6500) & (freqs < 9500)] *= 1.0 - profile.de_esser
+    eq[freqs > 12000] *= 0.92
+    return np.fft.irfft(spectrum * eq, n=wav.size).astype(np.float32)
+
+
+def multiband_compress(wav: np.ndarray, profile: MasteringProfile) -> np.ndarray:
+    if wav.size == 0 or profile.compression <= 0:
+        return wav
+    threshold = 10 ** (-18 / 20)
+    over = np.abs(wav) > threshold
+    out = wav.copy()
+    out[over] = np.sign(out[over]) * (threshold + (np.abs(out[over]) - threshold) * (1 - profile.compression))
+    return out.astype(np.float32)
+
+
+def soft_limiter(wav: np.ndarray, ceiling: float) -> np.ndarray:
+    if wav.size == 0:
+        return wav
+    limited = np.tanh(wav / max(ceiling, 1e-6)) * ceiling
+    peak = float(np.max(np.abs(limited)))
+    if peak > ceiling:
+        limited *= ceiling / peak
+    return limited.astype(np.float32)
+
+
+def studio_quality_report(wav: np.ndarray) -> str:
+    peak = float(np.max(np.abs(wav))) if wav.size else 0.0
+    lufs = estimate_lufs(wav)
+    dynamic_range = float(np.percentile(np.abs(wav), 95) - np.percentile(np.abs(wav), 20)) if wav.size else 0.0
+    clipping = float(np.mean(np.abs(wav) > 0.98) * 100) if wav.size else 0.0
+    clarity = int(np.clip(92 - clipping * 8 - max(0, -24 - lufs) * 1.5, 40, 99))
+    naturalness = int(np.clip(88 + dynamic_range * 40 - clipping * 6, 35, 98))
+    studio = int(np.clip((clarity + naturalness) / 2, 35, 99))
+    warning = "" if studio >= 70 else " WARNING: quality below expected level; try cleaner reference audio or Ultra Stable preset."
+    return f"Loudness={lufs:.1f} LUFS | Peak={peak:.2f} | Dynamic Range={dynamic_range:.3f} | Naturalness={naturalness}/100 | Studio Quality={studio}/100 | Noise≈{lufs:.1f}dB | Clipping={clipping:.2f}% | Clarity={clarity}/100{warning}"
+
+
+def master_audio(wav: np.ndarray, sr: int, compression: float = 0.15, brightness: float = 0.0, mastering_profile: str = "Natural Voice") -> np.ndarray:
+    profile = MASTERING_PROFILES.get(mastering_profile, MASTERING_PROFILES["Natural Voice"])
     wav = librosa.effects.trim(wav, top_db=42)[0].astype(np.float32)
-    if compression:
-        threshold = 10 ** (-18 / 20)
-        over = np.abs(wav) > threshold
-        wav[over] = np.sign(wav[over]) * (threshold + (np.abs(wav[over]) - threshold) * (1 - compression))
+    wav = declick_audio(wav)
+    wav = repair_clipping(wav)
+    wav = spectral_noise_suppress(wav, sr)
+    wav = dynamic_eq(wav, sr, profile)
+    wav = multiband_compress(wav, profile)
     if brightness and wav.size > 32:
         bright = wav - highpass_filter(wav, sr, 3000)
         wav = wav + brightness * bright
-    wav = loudness_normalize(wav, TARGET_LUFS)
-    peak = float(np.max(np.abs(wav))) if wav.size else 0
-    if peak > 0.99:
-        wav = 0.99 * wav / peak
-    fade_len = min(int(0.025 * sr), wav.size // 4)
+    wav = soft_limiter(wav, profile.limiter_ceiling)
+    wav = loudness_normalize(wav, profile.target_lufs)
+    wav = soft_limiter(wav, profile.limiter_ceiling)
+    fade_len = min(int(0.035 * sr), wav.size // 4)
     if fade_len > 0:
-        wav[:fade_len] *= np.linspace(0, 1, fade_len, dtype=np.float32)
-        wav[-fade_len:] *= np.linspace(1, 0, fade_len, dtype=np.float32)
+        curve = np.sin(np.linspace(0, np.pi / 2, fade_len, dtype=np.float32))
+        wav[:fade_len] *= curve
+        wav[-fade_len:] *= curve[::-1]
     return wav.astype(np.float32)
 
 
@@ -825,7 +1076,7 @@ def validate_inputs(gen_text: str, ref_audio: str | list[str] | None) -> None:
         raise ValueError("Text to Speak khali hai.")
 
 
-def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_style, speed, temperature, top_p, top_k, repetition_penalty, length_penalty, chunk_long_text, custom_pronunciations, forced_emotion, enable_mastering, enable_breathing, breathing_amount, progress=gr.Progress(track_tqdm=True)):
+def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_style, speed, temperature, top_p, top_k, repetition_penalty, length_penalty, chunk_long_text, custom_pronunciations, forced_emotion, speech_plan_editor, enable_mastering, mastering_profile, enable_breathing, breathing_amount, progress=gr.Progress(track_tqdm=True)):
     start = time.time()
     try:
         validate_inputs(gen_text, ref_audio)
@@ -834,7 +1085,10 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         language_code = LANGUAGE_CHOICES.get(language_label, "en")
         base = PRESETS[preset_name].settings if preset_name != "Use Advanced Sliders" else InferenceSettings(float(temperature), float(top_p), int(top_k), float(repetition_penalty), float(length_penalty), float(speed))
         chunks = sentence_chunks(text, speaking_style) if chunk_long_text else [text]
-        emotion_plans = analyze_emotions_for_chunks(chunks, forced_emotion)
+        manual_plans = parse_speech_plan_editor(speech_plan_editor, chunks, forced_emotion) if (speech_plan_editor or "").strip() else []
+        if manual_plans:
+            chunks = [plan.sentence for plan in manual_plans]
+        emotion_plans = [EmotionAnalysis(plan.sentence, plan.emotion, plan.confidence, plan.reasoning, plan.speaking_style, plan.energy, plan.speed, "manual", "manual") for plan in manual_plans] if manual_plans else analyze_emotions_for_chunks(chunks, forced_emotion)
         prosody_plans = analyze_prosody(chunks, speaking_style)
         progress(0.12, desc="Preparing reference voice")
         speaker_wavs, ref_warning, ref_score, ref_diagnostics = prepare_reference_audio(ref_audio)
@@ -858,7 +1112,7 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         merged = merge_chunks(wav_parts, final_sr, [plan.pause_after for plan in prosody_plans], breathing_amount=float(breathing_amount) if enable_breathing else 0.0, breath_flags=[plan.breath_before for plan in prosody_plans])
         if enable_mastering:
             preset = PRESETS[preset_name]
-            merged = master_audio(merged, final_sr, preset.compression, preset.eq_brightness)
+            merged = master_audio(merged, final_sr, preset.compression, preset.eq_brightness, mastering_profile)
         sf.write(OUTPUT_PATH, merged.astype(np.float32), final_sr)
         duration = len(merged) / final_sr if final_sr else 0
         peak = float(np.max(np.abs(merged))) if merged.size else 0
@@ -868,7 +1122,7 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         message = ["✅ Success! XTTS-v2 me reference text ki zaroorat nahi hoti.", f"Reference quality: {ref_score}/100", f"Reference diagnostics: {ref_diagnostics}", f"Detected emotions: {', '.join(dict.fromkeys(emotions))}", "Emotional diagnostics:", *emotion_reports, f"Prosody: {prosody_preview}", f"Chunks: {len(chunks)} · Duration: {duration:.1f}s · Sample rate: {final_sr} Hz · Peak: {peak:.2f} · LUFS: {lufs:.1f}", f"Elapsed: {elapsed:.1f}s", "Inference:", *stats]
         if ref_warning:
             message.insert(1, "⚠️ " + ref_warning)
-        return OUTPUT_PATH, "\n".join(message), f"{ref_score}/100", ", ".join(dict.fromkeys(emotions)), f"{ref_diagnostics} | chunks={len(chunks)} | infer+process={elapsed:.1f}s | peak={peak:.2f} | lufs={lufs:.1f} | duration={duration:.1f}s | streaming=progressive callbacks"
+        return OUTPUT_PATH, "\n".join(message), f"{ref_score}/100", ", ".join(dict.fromkeys(emotions)), f"{ref_diagnostics} | chunks={len(chunks)} | infer+process={elapsed:.1f}s | peak={peak:.2f} | lufs={lufs:.1f} | duration={duration:.1f}s | {studio_quality_report(merged)} | streaming=progressive callbacks"
     except Exception as exc:
         friendly = "❌ System Error: " + str(exc) + "\n\nRecovery tips: use a fresh GPU runtime, 6-15s clean audio, shorter text, or Ultra Stable preset.\n\n" + traceback.format_exc()
         return None, friendly, "0/100", "error", "failed"
@@ -890,7 +1144,10 @@ with gr.Blocks() as studio:
             with gr.Row():
                 preset_dropdown = gr.Dropdown(choices=list(PRESETS.keys()), value="Ultra Natural", label="Preset")
                 style_dropdown = gr.Dropdown(choices=list(STYLE_PAUSES.keys()), value="Conversation", label="Speaking Style")
-            forced_emotion_dropdown = gr.Dropdown(choices=["Auto", "Neutral", "Happy", "Excited", "Very Excited", "Sad", "Emotional", "Angry", "Calm", "Serious", "Motivational", "Inspirational", "Friendly", "Romantic", "Confident", "Fear", "Surprise", "Suspense", "Storytelling", "Documentary", "Tutorial", "News", "Advertisement"], value="Auto", label="Emotion Override")
+            forced_emotion_dropdown = gr.Dropdown(choices=["Auto", "Neutral", "Happy", "Very Happy", "Excited", "Very Excited", "Sad", "Very Sad", "Emotional", "Angry", "Calm", "Serious", "Fear", "Motivational", "Documentary", "Podcast", "Tutorial", "Storytelling", "Romantic", "Friendly", "Professional", "Advertisement", "Suspense", "Narration", "Audiobook", "Inspirational", "Confident", "Surprise", "News"], value="Auto", label="Emotion Override")
+            analyze_btn = gr.Button("🎛️ Analyze Script / Open Speech Director", variant="secondary")
+            speech_plan_editor = gr.Textbox(label="Speech Style Editor (JSON: edit sentence emotion/style/speed/pauses/pitch/stress/breathing/volume; add locked_fields to protect values)", lines=10)
+            timeline_box = gr.Textbox(label="Emotion Timeline", interactive=False)
             with gr.Accordion("Advanced XTTS Controls", open=False):
                 speed_slider = gr.Slider(0.85, 1.15, value=1.0, step=0.03, label="Speed")
                 temperature_slider = gr.Slider(0.2, 0.95, value=0.55, step=0.05, label="Temperature")
@@ -901,6 +1158,7 @@ with gr.Blocks() as studio:
             with gr.Row():
                 chunk_input = gr.Checkbox(value=True, label="Intelligent long-text chunking")
                 mastering_input = gr.Checkbox(value=True, label="Audio mastering")
+                mastering_profile_dropdown = gr.Dropdown(choices=list(MASTERING_PROFILES.keys()), value="YouTube", label="Mastering Profile")
             with gr.Row():
                 breathing_input = gr.Checkbox(value=True, label="Natural soft breathing")
                 breathing_slider = gr.Slider(0.0, 0.08, value=0.025, step=0.005, label="Breathing Amount")
@@ -911,9 +1169,15 @@ with gr.Blocks() as studio:
             emotion_box = gr.Textbox(label="Emotion Detected", interactive=False)
             stats_box = gr.Textbox(label="Inference Statistics", interactive=False)
     status_box = gr.Textbox(label="Real-time Logs / System Status", interactive=False, lines=10)
+    analyze_btn.click(
+        fn=analyze_script_for_editor,
+        inputs=[gen_text_input, language_dropdown, custom_pronunciations, forced_emotion_dropdown],
+        outputs=[speech_plan_editor, timeline_box, stats_box],
+    )
+
     generate_btn.click(
         fn=clone_voice_xtts,
-        inputs=[gen_text_input, audio_input, language_dropdown, preset_dropdown, style_dropdown, speed_slider, temperature_slider, top_p_slider, top_k_slider, repetition_slider, length_slider, chunk_input, custom_pronunciations, forced_emotion_dropdown, mastering_input, breathing_input, breathing_slider],
+        inputs=[gen_text_input, audio_input, language_dropdown, preset_dropdown, style_dropdown, speed_slider, temperature_slider, top_p_slider, top_k_slider, repetition_slider, length_slider, chunk_input, custom_pronunciations, forced_emotion_dropdown, speech_plan_editor, mastering_input, mastering_profile_dropdown, breathing_input, breathing_slider],
         outputs=[audio_output, status_box, reference_quality, emotion_box, stats_box],
     )
 

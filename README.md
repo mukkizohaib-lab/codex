@@ -10,6 +10,8 @@ A Google Colab friendly, fully local XTTS-v2 voice cloning app built on Coqui TT
 - Smart chunking by paragraphs, sentence boundaries, phrase punctuation, and maximum character count.
 - Sentence-by-sentence emotion detection with confidence, reasoning, speaking style, energy, speed, pause pattern, and rhythm diagnostics.
 - Emotion override control for forcing a specific delivery when Auto is not desired.
+- AI Speech Director editor that emits editable per-sentence JSON plans with emotion, style, energy, speed, pauses, pitch, stress, breathing, volume, important words, and lockable fields.
+- Emotion and speech timelines plus AI suggestions and script diagnostics before synthesis.
 - Advanced prosody planning for rhythm, emphasis words, stress words, cadence, intonation, question/exclamation handling, and narration flow.
 - AI script optimization that rewrites raw text into more speech-friendly phrasing before XTTS inference.
 - Dynamic pause prediction per chunk instead of fixed global silence.
@@ -17,7 +19,7 @@ A Google Colab friendly, fully local XTTS-v2 voice cloning app built on Coqui TT
 - Speaking styles: Tutorial, Conversation, Storytelling, News, Podcast, Documentary, Audiobook, Motivational, and Emotional.
 - Presets: Ultra Natural, Studio Voice, Narration, Podcast, Audiobook, Documentary, Storytelling, YouTube, Shorts, Emotional, Fast, and Ultra Stable.
 - Reference preprocessing with trimming, hum reduction, spectral noise suppression, adaptive noise gating, DeepFilterNet fallback hooks, DC offset removal, loudness normalization, clipping repair, peak limiting, clipping/silence checks, quality scoring, and cached prepared clips.
-- Mastering with LUFS-style loudness normalization, peak limiting, fade in/out, transient-safe compression, de-click friendly adaptive crossfades, and optional brightness EQ.
+- Studio mastering pipeline with de-clicking, clipping repair, denoising, dynamic EQ, de-essing, gentle multiband compression, soft limiting, LUFS-style loudness normalization, quality analysis, and selectable profiles for Studio Voice, Broadcast, Podcast, Audiobook, Documentary, YouTube, Radio, Warm Voice, Natural Voice, and Clean Voice.
 - Gradio UI with waveform output, progress, reference quality meter, detected emotion, advanced diagnostics, inference statistics, and real-time logs.
 
 ## Google Colab quick start
@@ -90,3 +92,11 @@ This project intentionally keeps XTTS-v2 and the Gradio interface. Some requeste
 ## Emotion engine
 
 The offline emotion engine analyzes every sentence independently. It supports Neutral, Happy, Excited, Very Excited, Sad, Emotional, Angry, Calm, Serious, Motivational, Inspirational, Friendly, Romantic, Confident, Fear, Surprise, Suspense, Storytelling, Documentary, Tutorial, News, and Advertisement. Each sentence returns a confidence score, reasoning, speaking style, estimated energy, estimated speed, pause pattern, and rhythm. Low-confidence detections fall back to Neutral instead of randomly assigning emotion.
+
+## AI Speech Director
+
+Click **Analyze Script / Open Speech Director** before generation to produce an editable JSON plan. Each sentence can be manually adjusted for emotion, speaking style, energy, speed, pause before/after, pitch, stress, breathing, pronunciation override, volume, and important words. Add a field name to `locked_fields` to prevent automatic analysis from replacing that value during generation.
+
+## Studio Voice Engine
+
+After XTTS-v2 synthesis, the offline Studio Voice Engine performs de-clicking, de-pop style clipping repair, spectral cleanup, adaptive denoising, de-essing, dynamic EQ, gentle multiband compression, soft limiting, LUFS-style normalization, and final quality diagnostics.
