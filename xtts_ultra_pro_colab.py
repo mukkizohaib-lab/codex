@@ -80,13 +80,12 @@ if IN_NOTEBOOK:
 
 import hashlib
 import inspect
-import math
 import os
 import re
 import tempfile
 import time
 import traceback
-from dataclasses import dataclass, replace
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
 
@@ -406,6 +405,21 @@ tts = TTS(MODEL_NAME).to(device)
 print("🔥 XTTS-v2 model loaded successfully!")
 
 
+def supported_kwargs(callable_obj: Any, kwargs: dict[str, Any]) -> dict[str, Any]:
+    """Return kwargs supported by a Gradio/TTS callable for cross-version compatibility."""
+
+    signature = inspect.signature(callable_obj)
+    if any(param.kind == inspect.Parameter.VAR_KEYWORD for param in signature.parameters.values()):
+        return kwargs
+    return {key: value for key, value in kwargs.items() if key in signature.parameters}
+
+
+def gradio_component(component_cls: Any, *args: Any, **kwargs: Any) -> Any:
+    """Instantiate a Gradio component while dropping kwargs missing in older/newer Gradio."""
+
+    return component_cls(*args, **supported_kwargs(component_cls.__init__, kwargs))
+
+
 def tts_accepts() -> tuple[inspect.Signature, bool]:
     signature = getattr(tts.tts_to_file, "__signature__", None) or inspect.signature(tts.tts_to_file)
     accepts_kwargs = any(param.kind.name == "VAR_KEYWORD" for param in signature.parameters.values())
@@ -496,12 +510,12 @@ def clone_voice_xtts(gen_text, ref_audio, language_label, preset_name, speaking_
         return None, friendly, "0/100", "error", "failed"
 
 
-with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue"), css="footer{display:none}.gradio-container{max-width:1200px!important}") as studio:
+with gr.Blocks() as studio:
     gr.Markdown("<center><h1>🎙️ XTTS-v2 Ultra Pro Voice Cloner</h1><p>Local, multilingual, no reference transcript required.</p></center>")
     with gr.Row():
         with gr.Column(scale=1):
             gr.Markdown("### 1. Reference Voice")
-            audio_input = gr.Audio(sources=["microphone", "upload"], type="filepath", label="Clean voice record/upload karein")
+            audio_input = gradio_component(gr.Audio, sources=["microphone", "upload"], type="filepath", label="Clean voice record/upload karein")
             gr.Markdown("Tip: 6-15 seconds, single speaker, no music, no echo. Multiple clips can be reused by rerunning with cached preprocessing.")
             reference_quality = gr.Textbox(label="Reference Quality Meter", interactive=False)
         with gr.Column(scale=2):
@@ -524,7 +538,7 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue"), css="footer{display:non
                 mastering_input = gr.Checkbox(value=True, label="Audio mastering")
             generate_btn = gr.Button("🚀 Generate XTTS-v2 Voice", variant="primary", size="lg")
     with gr.Row():
-        audio_output = gr.Audio(label="🎧 Generated Cloned Voice", show_download_button=True, waveform_options=gr.WaveformOptions(show_recording_waveform=True))
+        audio_output = gradio_component(gr.Audio, label="🎧 Generated Cloned Voice", show_download_button=True, waveform_options=getattr(gr, "WaveformOptions", lambda **_: None)(show_recording_waveform=True))
         with gr.Column():
             emotion_box = gr.Textbox(label="Emotion Detected", interactive=False)
             stats_box = gr.Textbox(label="Inference Statistics", interactive=False)
@@ -537,4 +551,4 @@ with gr.Blocks(theme=gr.themes.Soft(primary_hue="blue"), css="footer{display:non
 
 
 if __name__ == "__main__":
-    studio.launch(debug=True, share=IN_NOTEBOOK)
+    studio.launch(**supported_kwargs(studio.launch, {"debug": True, "share": IN_NOTEBOOK, "theme": gr.themes.Soft(primary_hue="blue"), "css": "footer{display:none}.gradio-container{max-width:1200px!important}"}))
