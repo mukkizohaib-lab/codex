@@ -9,11 +9,15 @@ A Google Colab friendly, fully local XTTS-v2 voice cloning app built on Coqui TT
 - Intelligent text normalization for English, Hindi, and Roman Urdu, including URL/email handling, number/date/time/currency cleanup, duplicate punctuation cleanup, quote cleanup, emoji removal, and pronunciation substitutions.
 - Smart chunking by paragraphs, sentence boundaries, phrase punctuation, and maximum character count.
 - Automatic emotion detection and per-chunk inference tuning.
+- Advanced prosody planning for rhythm, emphasis words, stress words, cadence, intonation, question/exclamation handling, and narration flow.
+- AI script optimization that rewrites raw text into more speech-friendly phrasing before XTTS inference.
+- Dynamic pause prediction per chunk instead of fixed global silence.
+- Optional soft human breathing at predicted natural breath points.
 - Speaking styles: Tutorial, Conversation, Storytelling, News, Podcast, Documentary, Audiobook, Motivational, and Emotional.
 - Presets: Ultra Natural, Studio Voice, Narration, Podcast, Audiobook, Documentary, Storytelling, YouTube, Shorts, Emotional, Fast, and Ultra Stable.
-- Reference preprocessing with trimming, hum reduction, DC offset removal, loudness normalization, peak limiting, clipping/silence checks, quality scoring, and cached prepared clips.
-- Mastering with loudness normalization, peak limiting, fade in/out, simple compression, de-click friendly crossfades, and optional brightness EQ.
-- Gradio UI with waveform output, progress, reference quality meter, detected emotion, inference statistics, and real-time logs.
+- Reference preprocessing with trimming, hum reduction, spectral noise suppression, adaptive noise gating, DeepFilterNet fallback hooks, DC offset removal, loudness normalization, clipping repair, peak limiting, clipping/silence checks, quality scoring, and cached prepared clips.
+- Mastering with LUFS-style loudness normalization, peak limiting, fade in/out, transient-safe compression, de-click friendly adaptive crossfades, and optional brightness EQ.
+- Gradio UI with waveform output, progress, reference quality meter, detected emotion, advanced diagnostics, inference statistics, and real-time logs.
 
 ## Google Colab quick start
 
@@ -49,7 +53,7 @@ Best results usually come from:
 - No background music, echo, clipping, or overlapping speakers.
 - Normal speaking volume with the microphone close to the speaker.
 
-The app scores reference quality and warns about silence, clipping, very low volume, or poor duration.
+The app scores reference quality and reports diagnostics including estimated noise floor, clipping percentage, silence percentage, and speaker consistency. It warns about silence, clipping, very low volume, or poor duration.
 
 ## Pronunciation dictionary
 
@@ -61,7 +65,7 @@ OpenAI = Open A I
 mybrand = my brand
 ```
 
-Built-in entries include ChatGPT, OpenAI, Python, GitHub, YouTube, AI, GPU, CPU, API, XTTS, and ElevenLabs.
+Built-in entries include ChatGPT, OpenAI, Python, GitHub, YouTube, AI, GPU, CPU, API, XTTS, ElevenLabs, common programming frameworks, audio terms, model/version words, and Roman Urdu pronunciation helpers.
 
 ## Troubleshooting
 
@@ -74,3 +78,10 @@ Built-in entries include ChatGPT, OpenAI, Python, GitHub, YouTube, AI, GPU, CPU,
 ## Notes
 
 This project intentionally keeps XTTS-v2 and the Gradio interface. Some requested features, such as true low-latency streaming directly from XTTS internals and direct speaker embedding averaging, depend on private model APIs that vary across Coqui TTS releases. This implementation provides compatible progress streaming, cached prepared references, and multi-reference input support through the public `tts_to_file` interface where supported.
+
+## Advanced quality controls
+
+- **Natural soft breathing:** inserts very quiet breath texture only at predicted phrase boundaries before long or dramatic chunks. Keep the default low amount for realistic results.
+- **Dynamic prosody:** each chunk receives predicted pause length, cadence, emphasis words, stress words, and intonation labels for diagnostics and adaptive inference.
+- **Diagnostics panel:** reports reference quality, noise, clipping, silence, estimated consistency, chunk count, processing/inference time, peak, LUFS estimate, generated duration, and streaming mode.
+- **Offline-only enhancement:** DeepFilterNet is used only when already installed; otherwise the built-in DSP cleanup path runs without cloud APIs.
